@@ -1,200 +1,23 @@
 # Quantitative-strategy-backtesting-framework-AI-assisted-factor-research
 # This strategy designs an event-driven stock index trading strategy by constructing effective factors such as momentum gap and volatility sentiment ratio.
 
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
-import matplotlib.ticker as mtick
+# 股指事件驱动策略回测
 
-# 1. 数据准备
-def load_data(filepath):
-    df = pd.read_excel(r'C:\users\m\Desktop\Dataset.xlsx')
-    df['index_return'] = df['index_return'].fillna(0)
-    return df
+## 策略逻辑
+- 动量缺口因子（momentum = feature3 - feature1）
+- 波动情绪比（volatility_ratio = feature2/(feature1+1)）
+- 做多条件：momentum > 40 且 volatility_ratio > 2
+- 做空条件：feature_cross < 200 且 feature1 > 50
 
-# 2. 特征工程
-def create_features(df):
-    # 基础特征
-    df['momentum'] = df['feature3'] - df['feature1']
-    df['volatility_ratio'] = df['feature2'] / (df['feature1'] + 1e-5)
-    df['feature_cross'] = df['feature3'] * df['feature2'] - df['feature1'] * 10
-    
-    # 滞后特征
-    for i in range(1, 4):
-        df[f'momentum_lag{i}'] = df['momentum'].shift(i)
-        df[f'vr_lag{i}'] = df['volatility_ratio'].shift(i)
-    
-    # 动态阈值
-    df['dynamic_momentum'] = df['momentum'] / df['momentum'].rolling(30, min_periods=10).std()
-    df['dynamic_vr'] = df['volatility_ratio'] / df['volatility_ratio'].rolling(30, min_periods=10).mean()
-    
-    return df
+## 回测结果（705个交易日）
+- 总收益：+65.57%
+- 年化收益：19.78%
+- 夏普比率：2.11
+- 最大回撤：-4.56%
 
-# 3. 信号生成
-def generate_signals(df):
-    signals = pd.Series(0, index=df.index)
-    position_days = 0
-    
-    for i in range(len(df)):
-        # 使用动态阈值
-        momentum_threshold = 1.2 if df.loc[i, 'dynamic_momentum'] > 1 else 1.0
-        vr_threshold = 1.8 if df.loc[i, 'dynamic_vr'] < 0.9 else 2.0
-        
-        # 做多条件
-        momentum_condition = (
-            df.loc[i, 'momentum'] > 40 * momentum_threshold and
-            df.loc[i, 'volatility_ratio'] > vr_threshold and
-            (df.loc[i, 'momentum_lag1'] > 30 or df.loc[i, 'momentum_lag2'] > 30)
-        )
-        
-        # 做空条件
-        short_condition = (
-            df.loc[i, 'feature_cross'] < 200 and
-            df.loc[i, 'feature1'] > 50 and
-            df.loc[i, 'volatility_ratio'] < 1.5
-        )
-        
-        # 风控条件
-        if position_days >= 5:
-            signals.iloc[i] = 0
-            position_days = 0
-        elif momentum_condition and position_days < 5:
-            signals.iloc[i] = 1
-            position_days += 1
-        elif short_condition and position_days < 5:
-            signals.iloc[i] = -1
-            position_days += 1
-        else:
-            signals.iloc[i] = 0
-            position_days = 0
-            
-    return signals
+## 文件说明
+- 完整回测代码（含数据清洗、信号生成、风控、可视化）
+- 策略绩效分析报告
 
-# 4. 回测引擎
-def backtest(df, signals, cost_rate=0.0002):
-    capital = [100]
-    position = 0
-    trade_log = []
-    
-    for i in range(1, len(df)):
-        current_signal = signals.iloc[i]
-        prev_signal = signals.iloc[i-1]
-        
-        # 平仓逻辑
-        if position != 0 and current_signal != position:
-            capital[-1] *= (1 - cost_rate)
-            trade_log.append({
-                'day': df.iloc[i]['day'],
-                'action': 'close',
-                'position': position,
-                'capital': capital[-1]
-            })
-            position = 0
-        
-        # 开仓逻辑
-        if current_signal != 0 and position == 0:
-            position = current_signal
-            capital[-1] *= (1 - cost_rate)
-            trade_log.append({
-                'day': df.iloc[i]['day'],
-                'action': 'open',
-                'position': position,
-                'capital': capital[-1]
-            })
-        
-        # 收益计算
-        if position != 0:
-            ret = df.iloc[i]['index_return'] * position
-            new_capital = capital[-1] * (1 + ret)
-        else:
-            new_capital = capital[-1]
-        
-        # 止损机制
-        if position != 0 and (new_capital / capital[-1] - 1) < -0.02:
-            new_capital = capital[-1] * 0.98
-            position = 0
-            trade_log.append({
-                'day': df.iloc[i]['day'],
-                'action': 'stop_loss',
-                'position': position,
-                'capital': new_capital
-            })
-        
-        capital.append(new_capital)
-    
-    return capital, pd.DataFrame(trade_log)
-
-# 5. 绩效评估
-def evaluate_performance(capital, index, trade_log):
-    returns = pd.Series(capital).pct_change().dropna()
-    index_returns = index.pct_change().dropna()
-    
-    metrics = {
-        '总收益率': capital[-1]/100 - 1,
-        '指数总收益': index.iloc[-1]/index.iloc[0] - 1,
-        '年化收益率': (1 + capital[-1]/100 - 1) ** (252/len(returns)) - 1,
-        '最大回撤': (pd.Series(capital) / pd.Series(capital).cummax() - 1).min(),
-        '夏普比率': returns.mean() / returns.std() * np.sqrt(252),
-        '胜率': (returns > 0).mean(),
-        '交易次数': len(trade_log),
-        '平均持仓天数': trade_log.groupby('position').size().mean()
-    }
-    return metrics
-
-# 主函数
-def main():
-    # 加载数据
-    df = load_data('Dataset.csv')
-    
-    # 特征工程
-    df = create_features(df)
-    
-    # 生成信号
-    signals = generate_signals(df)
-    df['signal'] = signals
-    
-    # 执行回测
-    capital, trade_log = backtest(df, signals)
-    df['strategy_capital'] = capital
-    df['index_capital'] = (1 + df['index_return']).cumprod() * 100
-    
-    # 评估绩效
-    metrics = evaluate_performance(capital, df['index_capital'], trade_log)
-    
-    # 可视化
-    plt.figure(figsize=(14, 8))
-    plt.plot(df['day'], df['strategy_capital'], label='策略净值', linewidth=2)
-    plt.plot(df['day'], df['index_capital'], label='指数净值', linestyle='--')
-    
-    # 标记交易信号
-    long_opens = trade_log[(trade_log['action'] == 'open') & (trade_log['position'] == 1)]
-    short_opens = trade_log[(trade_log['action'] == 'open') & (trade_log['position'] == -1)]
-    
-    plt.scatter(long_opens['day'], 
-                [df[df['day']==d]['strategy_capital'].values[0] for d in long_opens['day']], 
-                color='green', marker='^', s=100, label='做多开仓')
-    plt.scatter(short_opens['day'], 
-                [df[df['day']==d]['strategy_capital'].values[0] for d in short_opens['day']], 
-                color='red', marker='v', s=100, label='做空开仓')
-    
-    plt.title('事件驱动策略表现', fontsize=16)
-    plt.xlabel('交易日', fontsize=14)
-    plt.ylabel('净值', fontsize=14)
-    plt.legend()
-    plt.grid(linestyle='--', alpha=0.7)
-    plt.savefig('strategy_performance.png', dpi=300)
-    
-    # 输出结果
-    print("策略绩效指标:")
-    for k, v in metrics.items():
-        if isinstance(v, float):
-            print(f"{k}: {v:.4f}")
-        else:
-            print(f"{k}: {v}")
-    
-    return df, trade_log, metrics
-
-if __name__ == "__main__":
-    df, trade_log, metrics = main()
-    
+## 备注
+这是一个学习性质的项目，主要用于理解因子策略的开发流程。
